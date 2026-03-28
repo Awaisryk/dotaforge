@@ -23,7 +23,7 @@ class RecordingOrchestrator:
         camera: CameraController,
         recorder: StartMovieRecorder,
         converter: FFmpegConverter,
-        output_dir: Path = None,
+        output_dir: Optional[Path] = None,
         settings: Optional[Settings] = None
     ):
         """Initialize the orchestrator.
@@ -116,28 +116,44 @@ class RecordingOrchestrator:
             # Stop recording
             await self.recorder.stop_recording()
             
-            # Phase 5: Convert to MP4
-            logger.info("Phase 5/5: Converting to MP4")
+            # Phase 5: Convert to MP4 (or keep frames if ffmpeg not available)
+            logger.info("Phase 5/5: Converting to MP4 (if ffmpeg available)")
             
             # Ensure Dota 2 is closed before conversion
             await self.launcher.terminate()
             
             frame_pattern = self.recorder.get_frame_pattern_for_ffmpeg(match.match_id)
             
-            await self.converter.convert_to_mp4(
-                frame_pattern=frame_pattern,
-                output_path=output_path,
-                fps=self.settings.recording.framerate,
-                crf=self.settings.recording.crf
-            )
-            
-            # Cleanup
-            if self.settings.storage.cleanup_temp:
-                deleted = self.recorder.cleanup_frames(match.match_id)
-                logger.info(
-                    "Cleaned up temporary files",
-                    frames_deleted=deleted
+            try:
+                await self.converter.convert_to_mp4(
+                    frame_pattern=frame_pattern,
+                    output_path=output_path,
+                    fps=self.settings.recording.framerate,
+                    crf=self.settings.recording.crf
                 )
+                
+                # Cleanup frames after successful conversion
+                if self.settings.storage.cleanup_temp:
+                    deleted = self.recorder.cleanup_frames(match.match_id)
+                    logger.info(
+                        "Cleaned up temporary files",
+                        frames_deleted=deleted
+                    )
+                    
+            except Exception as e:
+                logger.warning(
+                    "FFmpeg conversion failed, keeping TGA frames",
+                    error=str(e)
+                )
+                logger.info(
+                    "TGA frames kept in temp/ folder - "
+                    "you can convert them manually later with:\n"
+                    f"ffmpeg -framerate {self.settings.recording.framerate} "
+                    f'-i "{frame_pattern}" -c:v libx264 -crf {self.settings.recording.crf} "{output_path}"'
+                )
+                
+                # Update output path to indicate frames kept
+                output_path = self.recorder.temp_dir / f"{match.match_id}_frames"
             
             logger.info(
                 "=" * 60
